@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from typing import Optional, Dict, Any, List
 
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal, Qt
 from PySide6.QtWidgets import QMessageBox
 
 from desktop.views.main_window import MainWindow
@@ -9,9 +9,12 @@ from desktop.models.api_client import (
     APIClient, UploadWorker, FetchInvoicesWorker,
     FetchStatisticsWorker, InvoiceActionWorker
 )
+from desktop.models.mock_data import mock_data
 
 
 class MainController(QObject):
+    connection_status_changed = Signal(bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.view = MainWindow()
@@ -19,8 +22,11 @@ class MainController(QObject):
         self._current_page = 1
         self._page_size = 50
         self._workers: List = []
+        self._is_offline_mode = False
+        self._connection_ok = False
 
         self._connect_signals()
+        self._show_initial_state()
         self._start_health_check()
 
     def _connect_signals(self):
@@ -31,36 +37,84 @@ class MainController(QObject):
         self.view.invoice_selected.connect(self._on_invoice_selected)
 
         self.view._auto_refresh_timer.timeout.connect(self._on_auto_refresh)
-        self.view._auto_refresh_timer.start()
+
+    def _show_initial_state(self):
+        self.view.set_status("正在初始化...")
+        self.view.show_progress(True, 3, 1)
+
+        QTimer.singleShot(100, self._load_mock_data)
+
+    def _load_mock_data(self):
+        self.view.show_progress(True, 3, 2)
+        mock_invoices = mock_data.generate_mock_invoices(30)
+        self.view.set_invoices(mock_invoices["items"], mock_invoices["total"])
+        self.view.show_progress(True, 3, 3)
+
+        mock_stats = mock_data.generate_mock_statistics()
+        self.view.update_statistics(mock_stats)
+
+        self.view.show_progress(False)
+        self._is_offline_mode = True
+        self.view.set_status("离线模式 - 显示模拟数据，请确认后端服务已启动")
 
     def _start_health_check(self):
         self._health_timer = QTimer(self)
         self._health_timer.timeout.connect(self._check_connection)
         self._health_timer.start(10000)
-        QTimer.singleShot(500, self._check_connection)
-        QTimer.singleShot(1000, self._on_refresh)
+        QTimer.singleShot(1500, self._check_connection)
 
     def _check_connection(self):
         import asyncio
         try:
             asyncio.run(self._async_health_check())
         except Exception as e:
-            self.view.set_connected(False, str(e))
+            self._handle_connection_failed(str(e))
 
     async def _async_health_check(self):
         client = APIClient()
         try:
             result = await client.health_check()
+            self._connection_ok = True
             self.view.set_connected(True, f"{result.get('app_name', '')} v{result.get('version', '')}")
+            self.connection_status_changed.emit(True)
+
+            if self._is_offline_mode:
+                self._is_offline_mode = False
+                self.view.set_status("后端服务已连接，正在加载真实数据...")
+                QTimer.singleShot(500, self._on_refresh)
+                self.view._auto_refresh_timer.start()
+
         except Exception as e:
+            self._connection_ok = False
             self.view.set_connected(False, str(e))
+            self.connection_status_changed.emit(False)
             raise
+
+    def _handle_connection_failed(self, error_msg: str):
+        if not self._is_offline_mode:
+            self._is_offline_mode = True
+            self.view.set_status(f"后端服务连接失败: {error_msg}，已切换到离线模式")
+            self._load_mock_data()
+            self.view._auto_refresh_timer.stop()
 
     def show(self):
         self.view.show()
 
     def _on_upload_files(self, file_paths: List[str]):
         if not file_paths:
+            return
+
+        if self._is_offline_mode:
+            QMessageBox.warning(
+                self.view,
+                "离线模式",
+                "当前处于离线模式，无法上传文件。\n\n"
+                "请确保后端服务已启动：\n"
+                "  1. 启动 PostgreSQL 服务\n"
+                "  2. 启动 Redis 服务\n"
+                "  3. 运行: .\\start_backend.ps1\n"
+                "  4. 运行: .\\start_celery.ps1\n"
+            )
             return
 
         self.view.set_status(f"正在上传 {len(file_paths)} 个文件...")
@@ -101,6 +155,14 @@ class MainController(QObject):
         self.view.show_message("上传错误", f"上传过程中发生错误:\n{error_msg}", QMessageBox.Critical)
 
     def _on_refresh(self):
+        if self._is_offline_mode:
+            self.view.set_status("离线模式 - 显示模拟数据")
+            mock_invoices = mock_data.generate_mock_invoices(30)
+            self.view.set_invoices(mock_invoices["items"], mock_invoices["total"])
+            mock_stats = mock_data.generate_mock_statistics()
+            self.view.update_statistics(mock_stats)
+            return
+
         self.view.set_status("正在刷新数据...")
 
         inv_worker = FetchInvoicesWorker(
@@ -115,11 +177,12 @@ class MainController(QObject):
 
         stats_worker = FetchStatisticsWorker()
         stats_worker.finished.connect(self.view.update_statistics)
+        stats_worker.error.connect(lambda e: None)
         self._workers.append(stats_worker)
         stats_worker.start()
 
     def _on_auto_refresh(self):
-        if self.view.isVisible():
+        if self.view.isVisible() and not self._is_offline_mode:
             self._on_refresh()
 
     def _on_search(self, filters: Dict[str, Any]):
@@ -135,21 +198,44 @@ class MainController(QObject):
 
     def _on_load_error(self, error_msg: str):
         self.view.set_status(f"加载失败: {error_msg}")
+        self._handle_connection_failed(error_msg)
 
     def _on_invoice_selected(self, invoice: Dict[str, Any]):
-        if invoice:
-            worker = InvoiceActionWorker("detail", invoice["id"])
-            worker.finished.connect(self.view.show_invoice_preview)
-            self._workers.append(worker)
-            worker.start()
-        else:
+        if not invoice:
             self.view.show_invoice_preview(None)
+            return
+
+        if self._is_offline_mode:
+            self.view.show_invoice_preview(invoice)
+            return
+
+        worker = InvoiceActionWorker("detail", invoice["id"])
+        worker.finished.connect(self.view.show_invoice_preview)
+        worker.error.connect(lambda e: self.view.show_invoice_preview(invoice))
+        self._workers.append(worker)
+        worker.start()
 
     def _on_invoice_action(self, action: str, invoice_id: int):
+        if self._is_offline_mode:
+            QMessageBox.information(
+                self.view,
+                "离线模式",
+                "当前处于离线模式，此操作需要连接后端服务。\n"
+                "请启动后端服务后重试。"
+            )
+            return
+
         if action == "detail":
             worker = InvoiceActionWorker("detail", invoice_id)
             worker.finished.connect(self.view.show_invoice_preview)
         elif action == "delete":
+            reply = QMessageBox.question(
+                self.view, "确认删除",
+                f"确定要删除发票吗？此操作不可恢复。",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
             worker = InvoiceActionWorker("delete", invoice_id)
             worker.finished.connect(lambda r, aid=invoice_id: self._on_delete_finished(r, aid))
         elif action == "reprocess":

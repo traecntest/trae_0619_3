@@ -1,6 +1,6 @@
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
-sqlalchemy==2.0.25
+SQLAlchemy==2.0.25
 psycopg2-binary==2.9.9
 alembic==1.13.1
 redis==5.0.1
@@ -15,9 +15,7 @@ pyqtgraph==0.13.3
 pdf2image==1.17.0
 Pillow==10.2.0
 numpy==1.26.3
-ofdparse==0.1.2
-pybloom-live==3.0.0
-rule-engine==4.1.0
 tenacity==8.2.3
 loguru==0.7.2
 aiofiles==23.2.1
+lxml==5.1.0

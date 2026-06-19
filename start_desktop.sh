@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# 发票管理系统 - 启动 FastAPI 后端服务 (Linux/macOS)
+# 发票管理系统 - 启动 PySide6 桌面客户端 (Linux/macOS)
 # ============================================================
 
 set -e
@@ -15,21 +15,13 @@ NC='\033[0m'
 
 echo -e ""
 echo -e "${CYAN}========================================${NC}"
-echo -e "${CYAN}  发票管理系统 - 后端服务${NC}"
+echo -e "${CYAN}  发票管理系统 - 桌面客户端${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo -e ""
 
 # 切换到项目根目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
-
-# 创建 .env 文件（如果不存在）
-if [ ! -f ".env" ]; then
-    echo -e "${YELLOW}[!] .env 文件不存在，从 .env.example 复制...${NC}"
-    cp .env.example .env
-    echo -e "${YELLOW}[!] 请修改 .env 配置文件后重新运行${NC}"
-    echo -e ""
-fi
 
 # 激活虚拟环境
 if [ -d "venv" ]; then
@@ -40,11 +32,15 @@ elif [ -d ".venv" ]; then
     source .venv/bin/activate
 fi
 
-echo -e ""
-echo -e "${WHITE}[*] 启动 FastAPI 后端服务...${NC}"
-echo -e "${WHITE}    服务地址: http://localhost:8000${NC}"
-echo -e "${WHITE}    API文档:  http://localhost:8000/docs${NC}"
-echo -e "${WHITE}    健康检查: http://localhost:8000/api/health${NC}"
+# 检查图形环境
+if [ -z "$DISPLAY" ] && [ "$(uname)" != "Darwin" ]; then
+    echo -e "${YELLOW}[警告] 未检测到图形环境 (DISPLAY 变量未设置)${NC}"
+    echo -e "        桌面客户端需要图形界面支持。"
+    echo -e "        如果您在远程服务器上运行，请使用 X11 Forwarding 或本地运行。"
+    echo -e ""
+fi
+
+echo -e "${GREEN}[*] 启动 PySide6 桌面客户端...${NC}"
 echo -e ""
 
-exec python -m backend.main "$@"
+exec python -m desktop.main "$@"
